@@ -3,15 +3,11 @@ GitHub客户端封装
 提供GitHub API的异步操作接口
 """
 
-import asyncio
 import base64
 import os
-import re
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
-import fnmatch
 
-import aiohttp
 from github import Github, GithubException
 from loguru import logger
 
@@ -31,7 +27,6 @@ class GitHubClient:
         """解析仓库URL，返回owner和repo名称"""
         # 支持多种格式的输入
         if repo_url.startswith("https://github.com/"):
-            # https://github.com/owner/repo
             parsed = urlparse(repo_url)
             parts = parsed.path.strip('/').split('/')
             if len(parts) >= 2:
@@ -186,15 +181,23 @@ class GitHubClient:
             search_results = self.github.search_code(search_query)
             
             results = []
-            for item in search_results[:20]:  # 限制结果数量
-                results.append({
-                    "name": item.name,
-                    "path": item.path,
-                    "sha": item.sha,
-                    "url": item.html_url,
-                    "score": item.score,
-                    "repository": item.repository.full_name
-                })
+            # 安全地处理搜索结果，避免索引越界
+            try:
+                result_count = min(search_results.totalCount, 20)  # 限制结果数量
+                for i, item in enumerate(search_results):
+                    if i >= result_count:
+                        break
+                    results.append({
+                        "name": item.name,
+                        "path": item.path,
+                        "sha": item.sha,
+                        "url": item.html_url,
+                        "score": item.score,
+                        "repository": item.repository.full_name
+                    })
+            except Exception as e:
+                logger.warning(f"处理搜索结果时出现问题: {e}")
+                # 如果处理结果时出错，返回空结果但不抛出异常
             
             return {
                 "query": query,
@@ -320,4 +323,93 @@ class GitHubClient:
             
         except GithubException as e:
             logger.error(f"获取提交历史失败: {e}")
-            raise Exception(f"获取提交历史失败: {e}") 
+            raise Exception(f"获取提交历史失败: {e}")
+    
+    async def get_user_repositories(self, username: str, sort: str = "updated", per_page: int = 30) -> Dict[str, Any]:
+        """获取用户的所有公开仓库列表"""
+        try:
+            user = self.github.get_user(username)
+            
+            # 获取用户基本信息
+            user_info = {
+                "login": user.login,
+                "name": user.name,
+                "bio": user.bio,
+                "public_repos": user.public_repos,
+                "followers": user.followers,
+                "following": user.following,
+                "created_at": user.created_at.isoformat() if user.created_at else None,
+                "updated_at": user.updated_at.isoformat() if user.updated_at else None,
+                "avatar_url": user.avatar_url,
+                "html_url": user.html_url
+            }
+            
+            # 获取仓库列表
+            repos = user.get_repos(sort=sort, direction="desc")
+            repositories = []
+            
+            count = 0
+            for repo in repos:
+                if count >= per_page:
+                    break
+                    
+                repositories.append({
+                    "name": repo.name,
+                    "full_name": repo.full_name,
+                    "description": repo.description,
+                    "private": repo.private,
+                    "fork": repo.fork,
+                    "stars": repo.stargazers_count,
+                    "watchers": repo.watchers_count,
+                    "forks": repo.forks_count,
+                    "language": repo.language,
+                    "size": repo.size,
+                    "default_branch": repo.default_branch,
+                    "created_at": repo.created_at.isoformat() if repo.created_at else None,
+                    "updated_at": repo.updated_at.isoformat() if repo.updated_at else None,
+                    "pushed_at": repo.pushed_at.isoformat() if repo.pushed_at else None,
+                    "html_url": repo.html_url,
+                    "clone_url": repo.clone_url,
+                    "ssh_url": repo.ssh_url,
+                    "topics": list(repo.get_topics()) if hasattr(repo, 'get_topics') else [],
+                    "has_issues": repo.has_issues,
+                    "has_projects": repo.has_projects,
+                    "has_wiki": repo.has_wiki,
+                    "has_pages": repo.has_pages,
+                    "has_downloads": repo.has_downloads,
+                    "archived": repo.archived,
+                    "disabled": repo.disabled,
+                    "open_issues": repo.open_issues_count,
+                    "license": repo.license.name if repo.license else None
+                })
+                count += 1
+            
+            # 计算统计信息
+            total_stars = sum(repo["stars"] for repo in repositories)
+            total_forks = sum(repo["forks"] for repo in repositories)
+            languages = {}
+            for repo in repositories:
+                if repo["language"]:
+                    languages[repo["language"]] = languages.get(repo["language"], 0) + 1
+            
+            return {
+                "user": user_info,
+                "repositories": repositories,
+                "statistics": {
+                    "total_repositories": len(repositories),
+                    "total_stars": total_stars,
+                    "total_forks": total_forks,
+                    "primary_languages": dict(sorted(languages.items(), key=lambda x: x[1], reverse=True)),
+                    "most_starred_repo": max(repositories, key=lambda x: x["stars"]) if repositories else None,
+                    "most_recent_repo": max(repositories, key=lambda x: x["updated_at"] or "") if repositories else None
+                },
+                "pagination": {
+                    "per_page": per_page,
+                    "returned": len(repositories),
+                    "has_more": user.public_repos > len(repositories)
+                }
+            }
+            
+        except GithubException as e:
+            logger.error(f"获取用户仓库失败: {e}")
+            raise Exception(f"获取用户仓库失败: {e}")

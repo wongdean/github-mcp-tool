@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "github-mcp": {
+      "command": "/opt/homebrew/Caskroom/miniconda/base/bin/python",
+      "args": ["/Users/coco/Git/github-mcp-tool/github_mcp_server.py"],
+      "env": {
+        "GITHUB_TOKEN": "your_github_token_here"
+      },
+      "disabled": false,
+      "alwaysAllow": []
+    }
+  }
+} 

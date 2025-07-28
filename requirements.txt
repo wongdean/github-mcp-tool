@@ -1,0 +1,20 @@
+# GitHub API客户端
+PyGithub>=2.1.1
+requests>=2.31.0
+
+# Web框架
+fastapi>=0.104.0
+uvicorn>=0.24.0
+
+# 数据处理和工具类
+pydantic>=2.5.0
+python-dotenv>=1.0.0
+
+# 异步HTTP客户端
+aiohttp>=3.8.0
+
+# 类型注解支持
+typing-extensions>=4.8.0
+
+# 日志和调试
+loguru>=0.7.2 

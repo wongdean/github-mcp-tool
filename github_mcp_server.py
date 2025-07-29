@@ -89,6 +89,28 @@ class GitHubMCPServer:
                     }
                 ),
                 Tool(
+                    name="check_file_exists",
+                    description="检查文件或目录是否存在，避免404错误。在调用get_file_content之前建议先使用此工具",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "repo_url": {
+                                "type": "string",
+                                "description": "GitHub仓库URL或owner/repo格式"
+                            },
+                            "file_path": {
+                                "type": "string",
+                                "description": "要检查的文件或目录路径"
+                            },
+                            "branch": {
+                                "type": "string",
+                                "description": "分支名（可选，默认为main/master）"
+                            }
+                        },
+                        "required": ["repo_url", "file_path"]
+                    }
+                ),
+                Tool(
                     name="list_directory",
                     description="列出仓库中指定目录的内容",
                     inputSchema={
@@ -265,6 +287,100 @@ class GitHubMCPServer:
                         },
                         "required": ["repo_url", "target_class"]
                     }
+                ),
+                Tool(
+                    name="smart_code_review",
+                    description="智能代码审查工具，自动选择重要文件进行审查，避免上下文过大",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "repo_url": {
+                                "type": "string",
+                                "description": "GitHub仓库URL或owner/repo格式"
+                            },
+                            "focus_area": {
+                                "type": "string",
+                                "description": "审查重点：security(安全), performance(性能), maintainability(可维护性), all(全面)",
+                                "enum": ["security", "performance", "maintainability", "all"]
+                            },
+                            "max_files": {
+                                "type": "integer",
+                                "description": "最大审查文件数（默认5）",
+                                "default": 5
+                            }
+                        },
+                        "required": ["repo_url"]
+                    }
+                ),
+                Tool(
+                    name="smart_path_explorer",
+                    description="智能路径探索工具，当路径不存在时自动回退到上级目录并提供建议",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "repo_url": {
+                                "type": "string",
+                                "description": "GitHub仓库URL或owner/repo格式"
+                            },
+                            "target_path": {
+                                "type": "string", 
+                                "description": "要探索的目标路径"
+                            },
+                            "branch": {
+                                "type": "string",
+                                "description": "分支名（可选，默认为main/master）"
+                            }
+                        },
+                        "required": ["repo_url", "target_path"]
+                    }
+                ),
+                Tool(
+                    name="intelligent_file_finder",
+                    description="智能文件查找工具，基于模式匹配查找文件，避免路径猜测",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "repo_url": {
+                                "type": "string",
+                                "description": "GitHub仓库URL或owner/repo格式"
+                            },
+                            "file_pattern": {
+                                "type": "string",
+                                "description": "文件名或路径模式（如'filter', 'Controller.java'等）"
+                            },
+                            "branch": {
+                                "type": "string",
+                                "description": "分支名（可选，默认为main/master）"
+                            }
+                        },
+                        "required": ["repo_url", "file_pattern"]
+                    }
+                ),
+                Tool(
+                    name="suggest_exploration_path",
+                    description="基于目标概念建议探索路径，用于指导源码分析方向",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "repo_url": {
+                                "type": "string",
+                                "description": "GitHub仓库URL或owner/repo格式"
+                            },
+                            "current_path": {
+                                "type": "string",
+                                "description": "当前所在路径"
+                            },
+                            "target_concept": {
+                                "type": "string",
+                                "description": "目标概念（如'filter', 'controller', 'security'等）"
+                            },
+                            "branch": {
+                                "type": "string",
+                                "description": "分支名（可选，默认为main/master）"
+                            }
+                        },
+                        "required": ["repo_url", "current_path", "target_concept"]
+                    }
                 )
             ]
 
@@ -280,6 +396,12 @@ class GitHubMCPServer:
                     result = await self.github_client.get_repository_info(arguments["repo_url"])
                 elif name == "get_file_content":
                     result = await self.github_client.get_file_content(
+                        arguments["repo_url"],
+                        arguments["file_path"],
+                        arguments.get("branch")
+                    )
+                elif name == "check_file_exists":
+                    result = await self.github_client.check_file_exists(
                         arguments["repo_url"],
                         arguments["file_path"],
                         arguments.get("branch")
@@ -331,6 +453,31 @@ class GitHubMCPServer:
                     result = await self.java_analyzer.analyze_dependency_chain(
                         arguments["repo_url"],
                         arguments["target_class"]
+                    )
+                elif name == "smart_code_review":
+                    result = await self.java_analyzer.smart_code_review(
+                        arguments["repo_url"],
+                        arguments.get("focus_area", "all"),
+                        arguments.get("max_files", 5)
+                    )
+                elif name == "smart_path_explorer":
+                    result = await self.github_client.smart_path_explorer(
+                        arguments["repo_url"],
+                        arguments["target_path"],
+                        arguments.get("branch")
+                    )
+                elif name == "intelligent_file_finder":
+                    result = await self.github_client.intelligent_file_finder(
+                        arguments["repo_url"],
+                        arguments["file_pattern"],
+                        arguments.get("branch")
+                    )
+                elif name == "suggest_exploration_path":
+                    result = await self.github_client.suggest_exploration_path(
+                        arguments["repo_url"],
+                        arguments["current_path"],
+                        arguments["target_concept"],
+                        arguments.get("branch")
                     )
                 else:
                     raise ValueError(f"未知的工具: {name}")
@@ -431,6 +578,11 @@ class GitHubMCPServer:
                 if file_path:
                     return f"""请对GitHub仓库 {repo_url} 中的文件 {file_path} 进行详细的代码审查。
 
+⚠️ 重要提示：在获取文件内容前，请务必：
+1. 使用 check_file_exists() 确认文件是否存在
+2. 如果文件不存在，使用 smart_path_explorer() 智能探索正确路径
+3. 或使用 intelligent_file_finder() 按模式查找文件
+
 审查重点：
 1. 代码质量：语法规范、命名规范、注释质量
 2. 逻辑设计：算法效率、错误处理、边界条件
@@ -441,17 +593,41 @@ class GitHubMCPServer:
                 else:
                     return f"""请对GitHub仓库 {repo_url} 进行全面的代码审查。
 
-审查步骤：
-1. 先获取仓库结构，识别核心文件
-2. 重点审查主要代码文件
-3. 检查配置文件和依赖管理
-4. 分析测试覆盖情况
+🔍 **智能审查流程**（重要！避免路径猜测错误）：
 
-请重点关注：
+第1步：【项目结构了解】
+- 使用 get_repository_structure() 了解项目整体结构
+
+第2步：【智能路径探索】
+- 如果要查找特定功能（如filter、controller等），使用 suggest_exploration_path() 获取建议路径
+- 如果路径不存在，使用 smart_path_explorer() 自动回退并找到正确路径
+- 使用 intelligent_file_finder() 按文件名模式查找
+
+第3步：【文件存在性确认】
+- 使用 check_file_exists() 确认要审查的文件是否存在
+
+第4步：【智能审查】
+- 推荐使用 smart_code_review() 工具进行高效审查
+- 或基于确认存在的路径进行详细分析
+
+⚠️ **严禁直接猜测文件路径！** 
+❌ 不要直接调用 get_file_content("repo", "猜测的路径")
+✅ 先用智能探索工具确认路径存在性
+
+🛠️ **推荐工具组合**：
+1. get_repository_structure → 了解结构
+2. suggest_exploration_path → 获取建议路径  
+3. smart_path_explorer → 智能探索
+4. check_file_exists → 验证存在性
+5. get_file_content → 获取内容
+
+审查重点：
 - 代码规范和最佳实践
 - 潜在的bug和安全问题
 - 性能优化机会
-- 架构改进建议"""
+- 架构改进建议
+
+💡 这样可以避免404错误，确保分析的连续性！"""
 
             elif name == "tech_stack_analysis":
                 return f"""请分析GitHub仓库 {repo_url} 的技术栈选择。

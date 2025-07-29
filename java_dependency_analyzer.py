@@ -7,7 +7,7 @@ Java代码依赖分析器
 import re
 import asyncio
 import xml.etree.ElementTree as ET
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 from github_client import GitHubClient
 
@@ -107,45 +107,137 @@ class JavaDependencyAnalyzer:
             "implementation": implementation
         }
     
-    async def analyze_dependency_chain(self, repo_url: str, target_class: str) -> Dict:
-        """分析某个类的完整依赖链"""
-        print(f"🔗 分析依赖链: {target_class} in {repo_url}")
-        
-        chain = []
-        current_repo = repo_url
-        current_class = target_class
-        
-        # 最多追踪5层依赖，避免无限循环
-        for level in range(5):
-            print(f"  📍 第{level+1}层: 在 {current_repo} 中查找 {current_class}")
+    async def analyze_dependency_chain(self, repo_url: str, target_class: str) -> Dict[str, Any]:
+        """分析类的完整依赖链"""
+        try:
+            print(f"🔍 开始分析 {target_class} 的完整依赖链...")
             
-            # 搜索类的定义
-            class_info = await self._find_class_definition(current_repo, current_class)
-            if not class_info:
-                break
+            dependency_chain = []
+            visited_classes = set()
             
-            chain.append({
-                "level": level + 1,
-                "repository": current_repo,
-                "class": current_class,
-                "file_path": class_info.get("file_path"),
-                "implementation_snippet": class_info.get("code_snippet", "")[:500]
-            })
-            
-            # 查找这个类的上游依赖
-            upstream = await self._find_upstream_dependency(current_repo, current_class)
-            if not upstream:
-                break
+            async def trace_class(class_name: str, depth: int = 0) -> Optional[Dict]:
+                if depth > 5 or class_name in visited_classes:  # 防止无限递归
+                    return None
                 
-            current_repo = upstream["repo"]
-            current_class = upstream["class"]
-        
-        return {
-            "target_class": target_class,
-            "original_repo": repo_url,
-            "dependency_chain": chain,
-            "chain_length": len(chain)
-        }
+                visited_classes.add(class_name)
+                print(f"{'  ' * depth}📋 分析类: {class_name}")
+                
+                # 查找类定义
+                class_info = await self._find_class_definition(repo_url, class_name)
+                if not class_info:
+                    return None
+                
+                # 查找上游依赖
+                upstream = await self._find_upstream_dependency(repo_url, class_name)
+                
+                result = {
+                    "class_name": class_name,
+                    "depth": depth,
+                    "file_path": class_info.get("file_path"),
+                    "code_snippet": class_info.get("code_snippet", "")[:1000],  # 限制代码片段长度
+                    "upstream_dependencies": []
+                }
+                
+                if upstream:
+                    upstream_result = await trace_class(upstream.get("class_name"), depth + 1)
+                    if upstream_result:
+                        result["upstream_dependencies"].append(upstream_result)
+                
+                return result
+            
+            # 开始追踪
+            root_analysis = await trace_class(target_class)
+            
+            return {
+                "target_class": target_class,
+                "repository": repo_url,
+                "dependency_chain": root_analysis,
+                "total_classes_analyzed": len(visited_classes),
+                "max_depth_reached": 5
+            }
+            
+        except Exception as e:
+            print(f"❌ 依赖链分析失败: {e}")
+            return {
+                "error": str(e),
+                "target_class": target_class,
+                "repository": repo_url
+            }
+    
+    async def smart_code_review(self, repo_url: str, focus_area: str = "all", max_files: int = 5) -> Dict[str, Any]:
+        """智能代码审查，自动选择重要文件"""
+        try:
+            print(f"🔍 开始智能代码审查: {repo_url}")
+            
+            # 1. 获取仓库结构
+            structure = await self.github_client.get_repository_structure(repo_url, max_depth=2)
+            
+            # 2. 识别重要文件
+            important_files = self._identify_important_files(structure, focus_area, max_files)
+            
+            # 3. 分析选中的文件
+            review_results = []
+            total_size = 0
+            MAX_TOTAL_SIZE = 200000  # 总字符数限制
+            
+            for file_info in important_files:
+                if total_size > MAX_TOTAL_SIZE:
+                    break
+                    
+                try:
+                    file_content = await self.github_client.get_file_content(
+                        repo_url, file_info["path"]
+                    )
+                    
+                    if not file_content.get("truncated", False):
+                        content_size = len(file_content.get("content", ""))
+                        if total_size + content_size <= MAX_TOTAL_SIZE:
+                            review_results.append({
+                                "file": file_info,
+                                "content": file_content,
+                                "priority": file_info.get("priority", "medium")
+                            })
+                            total_size += content_size
+                        else:
+                            # 文件过大，只包含摘要信息
+                            review_results.append({
+                                "file": file_info,
+                                "content": {
+                                    "path": file_content["path"],
+                                    "size": file_content["size"],
+                                    "content": "[文件已跳过: 会导致上下文过大]",
+                                    "truncated": True
+                                },
+                                "priority": file_info.get("priority", "medium")
+                            })
+                    else:
+                        review_results.append({
+                            "file": file_info,
+                            "content": file_content,
+                            "priority": file_info.get("priority", "medium")
+                        })
+                        
+                except Exception as e:
+                    print(f"⚠️ 无法获取文件 {file_info['path']}: {e}")
+                    continue
+            
+            return {
+                "repository": repo_url,
+                "focus_area": focus_area,
+                "files_reviewed": len(review_results),
+                "total_context_size": total_size,
+                "review_data": review_results,
+                "recommendations": self._generate_review_recommendations(focus_area),
+                "context_safe": total_size <= MAX_TOTAL_SIZE
+            }
+            
+        except Exception as e:
+            print(f"❌ 智能代码审查失败: {e}")
+            return {
+                "error": str(e),
+                "repository": repo_url,
+                "focus_area": focus_area
+            }
     
     def _find_build_files(self, structure: Dict) -> List[str]:
         """查找构建配置文件"""
@@ -332,6 +424,121 @@ class JavaDependencyAnalyzer:
         # 这里需要更复杂的逻辑来分析import语句和依赖关系
         # 简化实现，返回None表示没有更上游的依赖
         return None
+
+    def _identify_important_files(self, structure: Dict, focus_area: str, max_files: int) -> List[Dict]:
+        """识别重要文件进行审查"""
+        files = []
+        
+        def extract_files(items, path_prefix=""):
+            for item in items:
+                if item["type"] == "file":
+                    priority = self._calculate_file_priority(item, focus_area)
+                    if priority > 0:
+                        files.append({
+                            "path": item["path"],
+                            "name": item["name"],
+                            "size": item.get("size", 0),
+                            "priority": priority,
+                            "reason": self._get_priority_reason(item, focus_area)
+                        })
+                elif item["type"] == "dir" and item.get("children"):
+                    extract_files(item["children"], item["path"])
+        
+        extract_files(structure.get("structure", []))
+        
+        # 按优先级排序并限制数量
+        files.sort(key=lambda x: x["priority"], reverse=True)
+        return files[:max_files]
+    
+    def _calculate_file_priority(self, file_item: Dict, focus_area: str) -> int:
+        """计算文件审查优先级"""
+        name = file_item["name"].lower()
+        path = file_item["path"].lower()
+        size = file_item.get("size", 0)
+        
+        # 跳过过大的文件
+        if size > 500000:  # 500KB
+            return 0
+        
+        priority = 0
+        
+        # 基础优先级
+        if any(ext in name for ext in ['.py', '.java', '.js', '.ts', '.go', '.cpp', '.c']):
+            priority += 5
+        
+        # 根据focus_area调整优先级
+        if focus_area == "security" or focus_area == "all":
+            if any(keyword in path for keyword in ['auth', 'login', 'security', 'password', 'token']):
+                priority += 10
+            if any(keyword in name for keyword in ['auth', 'security', 'crypto', 'hash']):
+                priority += 8
+        
+        if focus_area == "performance" or focus_area == "all":
+            if any(keyword in path for keyword in ['cache', 'optimization', 'performance']):
+                priority += 10
+            if any(keyword in name for keyword in ['cache', 'optimize', 'performance', 'benchmark']):
+                priority += 8
+        
+        if focus_area == "maintainability" or focus_area == "all":
+            if any(keyword in name for keyword in ['main', 'index', 'app', 'server', 'client']):
+                priority += 10
+            if any(keyword in path for keyword in ['src/', 'lib/', 'core/']):
+                priority += 5
+        
+        # 配置文件重要性
+        if any(keyword in name for keyword in ['config', 'setting', 'env', 'dockerfile', 'package.json', 'requirements.txt', 'pom.xml']):
+            priority += 7
+        
+        return priority
+    
+    def _get_priority_reason(self, file_item: Dict, focus_area: str) -> str:
+        """获取优先级选择原因"""
+        name = file_item["name"].lower()
+        path = file_item["path"].lower()
+        
+        reasons = []
+        
+        if any(keyword in path for keyword in ['auth', 'security']):
+            reasons.append("安全相关")
+        if any(keyword in path for keyword in ['cache', 'performance']):
+            reasons.append("性能相关")
+        if any(keyword in name for keyword in ['main', 'index', 'app']):
+            reasons.append("核心文件")
+        if any(keyword in name for keyword in ['config', 'setting']):
+            reasons.append("配置文件")
+        
+        return ", ".join(reasons) if reasons else "通用代码文件"
+    
+    def _generate_review_recommendations(self, focus_area: str) -> List[str]:
+        """生成审查建议"""
+        base_recommendations = [
+            "检查代码风格和命名规范",
+            "验证错误处理和边界条件",
+            "评估代码可读性和维护性"
+        ]
+        
+        if focus_area == "security" or focus_area == "all":
+            base_recommendations.extend([
+                "检查输入验证和SQL注入防护",
+                "验证身份认证和授权机制",
+                "检查敏感信息泄露风险"
+            ])
+        
+        if focus_area == "performance" or focus_area == "all":
+            base_recommendations.extend([
+                "分析算法时间复杂度",
+                "检查内存使用和垃圾回收",
+                "评估数据库查询效率"
+            ])
+        
+        if focus_area == "maintainability" or focus_area == "all":
+            base_recommendations.extend([
+                "评估模块化和依赖关系",
+                "检查测试覆盖率",
+                "分析代码重复和重构机会"
+            ])
+        
+        return base_recommendations
 
 # 使用示例
 async def demo_java_analysis():
